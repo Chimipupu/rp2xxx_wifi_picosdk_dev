@@ -4,45 +4,48 @@
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
-#include <string.h>
-#include <time.h>
-
-#include "pico/stdlib.h"
+#include "common.h"
+#include "app_ntp.h"
 #include "pico/cyw43_arch.h"
+#include "lwip/netif.h"
+#include "lwip/ip_addr.h"
 
-#include "lwip/dns.h"
-#include "lwip/pbuf.h"
-#include "lwip/udp.h"
+uint8_t g_wifi_init_status_flg = ERROR_WIFI_NONE;
 
-typedef struct NTP_T_ {
-    ip_addr_t ntp_server_address;
-    bool dns_request_sent;
-    struct udp_pcb *ntp_pcb;
-    absolute_time_t ntp_test_time;
-    alarm_id_t ntp_resend_alarm;
-} NTP_T;
+static void ntp_result(NTP_T *p_ntp_state, int status, time_t *p_result);
 
-#define NTP_SERVER "pool.ntp.org"
-#define NTP_MSG_LEN 48
-#define NTP_PORT 123
-#define NTP_DELTA 2208988800 // seconds between 1 Jan 1900 and 1 Jan 1970
-#define NTP_TEST_TIME (30 * 1000)
-#define NTP_RESEND_TIME (10 * 1000)
+void print_wifi_info(void)
+{
+    // SSID表示
+    printf("WiFi SSID : %s\n", WIFI_SSID);
 
-// Called with results of operation
-static void ntp_result(NTP_T* state, int status, time_t *result) {
-    if (status == 0 && result) {
-        struct tm *utc = gmtime(result);
-        printf("got ntp response: %02d/%02d/%04d %02d:%02d:%02d\n", utc->tm_mday, utc->tm_mon + 1, utc->tm_year + 1900,
-               utc->tm_hour, utc->tm_min, utc->tm_sec);
+    // IPアドレス表示
+    ip4_addr_t ip = netif_default->ip_addr;
+    printf("WiFi IP Address: %s\n", ip4addr_ntoa(&ip));
+}
+
+static void ntp_result(NTP_T *p_ntp_state, int status, time_t *p_result)
+{
+    if (status == 0 && p_result) {
+        // UTC
+        struct tm *utc = gmtime(p_result);
+        printf("NTP(UTC) : %04d/%02d/%02d %02d:%02d:%02d\n",
+                utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday,
+                utc->tm_hour, utc->tm_min, utc->tm_sec);
+        // JST
+        time_t jst = *p_result + 9 * 3600;
+        struct tm *p_local = gmtime(&jst);
+        printf("NTP(JST) : %04d/%02d/%02d %02d:%02d:%02d\n",
+                p_local->tm_year + 1900, p_local->tm_mon + 1, p_local->tm_mday,
+                p_local->tm_hour, p_local->tm_min, p_local->tm_sec);
     }
 
-    if (state->ntp_resend_alarm > 0) {
-        cancel_alarm(state->ntp_resend_alarm);
-        state->ntp_resend_alarm = 0;
+    if (p_ntp_state->ntp_resend_alarm > 0) {
+        cancel_alarm(p_ntp_state->ntp_resend_alarm);
+        p_ntp_state->ntp_resend_alarm = 0;
     }
-    state->ntp_test_time = make_timeout_time_ms(NTP_TEST_TIME);
-    state->dns_request_sent = false;
+    p_ntp_state->ntp_test_time = make_timeout_time_ms(NTP_TEST_TIME);
+    p_ntp_state->dns_request_sent = false;
 }
 
 static int64_t ntp_failed_handler(alarm_id_t id, void *user_data);
@@ -76,7 +79,7 @@ static void ntp_dns_found(const char *hostname, const ip_addr_t *ipaddr, void *a
     NTP_T *state = (NTP_T*)arg;
     if (ipaddr) {
         state->ntp_server_address = *ipaddr;
-        printf("ntp address %s\n", ipaddr_ntoa(ipaddr));
+        printf("NTP IP Addr = %s, URL : %s\n", ipaddr_ntoa(ipaddr), NTP_SERVER_JP);
         ntp_request(state);
     } else {
         printf("ntp dns request failed\n");
@@ -126,9 +129,12 @@ static NTP_T* ntp_init(void) {
 // Runs ntp test forever
 void run_ntp_test(void) {
     NTP_T *state = ntp_init();
+
     if (!state)
         return;
-    while(true) {
+
+    while(true)
+    {
         if (absolute_time_diff_us(get_absolute_time(), state->ntp_test_time) < 0 && !state->dns_request_sent) {
             // Set alarm in case udp requests are lost
             state->ntp_resend_alarm = add_alarm_in_ms(NTP_RESEND_TIME, ntp_failed_handler, state, true);
@@ -138,7 +144,7 @@ void run_ntp_test(void) {
             // these calls are a no-op and can be omitted, but it is a good practice to use them in
             // case you switch the cyw43_arch type later.
             cyw43_arch_lwip_begin();
-            int err = dns_gethostbyname(NTP_SERVER, &state->ntp_server_address, ntp_dns_found, state);
+            int err = dns_gethostbyname(NTP_SERVER_JP, &state->ntp_server_address, ntp_dns_found, state);
             cyw43_arch_lwip_end();
 
             state->dns_request_sent = true;
@@ -166,21 +172,51 @@ void run_ntp_test(void) {
     free(state);
 }
 
-int main() {
-    stdio_init_all();
+uint8_t hw_wifi_init(void)
+{
+    uint8_t ret = ERROR_WIFI_NONE;
+    int ret_wifi_init, ret_wifi_connect;
 
-    if (cyw43_arch_init()) {
+    // WiFiモジュール初期化
+    ret_wifi_init = cyw43_arch_init();
+    if (ret_wifi_init) {
         printf("failed to initialise\n");
-        return 1;
+        ret = ERROR_WIFI_MODULE_INIT;
     }
 
+    // WiFi STAモード起動
     cyw43_arch_enable_sta_mode();
 
-    if (cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 10000)) {
+    // WiFi接続
+    ret_wifi_connect = cyw43_arch_wifi_connect_timeout_ms(WIFI_SSID, WIFI_PASSWORD, CYW43_AUTH_WPA2_AES_PSK, 10000);
+    if (ret_wifi_connect) {
         printf("failed to connect\n");
-        return 1;
+        ret = ERROR_WIFI_STA_CONNECT;
     }
-    run_ntp_test();
+
+    // SSIDとパスワードを表示
+    print_wifi_info();
+
+    return ret;
+}
+
+int main()
+{
+    stdio_init_all();
+
+    // WiFi初期化
+    g_wifi_init_status_flg = hw_wifi_init();
+
+    if (g_wifi_init_status_flg == ERROR_WIFI_NONE) {
+        // NTPテスト
+        run_ntp_test();
+    } else {
+        // WiFiエラー
+        printf("[ERROR] WiFi Init Fail\n");
+    }
+
+    // WiFi切断
     cyw43_arch_deinit();
-   return 0;
+
+    return 0;
 }
