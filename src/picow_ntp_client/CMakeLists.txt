@@ -28,37 +28,48 @@ set(PICO_BOARD pico2_w CACHE STRING "Board type")
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
-project(picow_wifi_scan C CXX ASM)
+project(picow_ntp_client C CXX ASM)
+
+set(WIFI_SSID "B4865595449D-2G")
+set(WIFI_PASSWORD "55351108940066")
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(picow_wifi_scan_background
-        picow_wifi_scan.c
+add_executable(picow_ntp_client_background
+        picow_ntp_client.c
         )
-target_include_directories(picow_wifi_scan_background PRIVATE
+target_compile_definitions(picow_ntp_client_background PRIVATE
+        WIFI_SSID=\"${WIFI_SSID}\"
+        WIFI_PASSWORD=\"${WIFI_PASSWORD}\"
+        )
+target_include_directories(picow_ntp_client_background PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
         ${CMAKE_CURRENT_LIST_DIR}/.. # for our common lwipopts
-        )
-target_link_libraries(picow_wifi_scan_background
+)
+target_link_libraries(picow_ntp_client_background
         pico_cyw43_arch_lwip_threadsafe_background
         pico_stdlib
         )
 
-pico_add_extra_outputs(picow_wifi_scan_background)
+pico_add_extra_outputs(picow_ntp_client_background)
 
-add_executable(picow_wifi_scan_poll
-        picow_wifi_scan.c
+add_executable(picow_ntp_client_poll
+        picow_ntp_client.c
         )
-target_include_directories(picow_wifi_scan_poll PRIVATE
+target_compile_definitions(picow_ntp_client_poll PRIVATE
+        WIFI_SSID=\"${WIFI_SSID}\"
+        WIFI_PASSWORD=\"${WIFI_PASSWORD}\"
+        )
+target_include_directories(picow_ntp_client_poll PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
         ${CMAKE_CURRENT_LIST_DIR}/.. # for our common lwipopts
         )
-target_link_libraries(picow_wifi_scan_poll
+target_link_libraries(picow_ntp_client_poll
         pico_cyw43_arch_lwip_poll
         pico_stdlib
         )
-pico_add_extra_outputs(picow_wifi_scan_poll)
+pico_add_extra_outputs(picow_ntp_client_poll)
 
